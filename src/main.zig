@@ -19,7 +19,7 @@ pub fn main() !void {
     defer if (icon_path) |p| allocator.free(p);
 
     const icon_rendered = if (icon_path) |p|
-        icon.renderWithChafa(allocator, p) catch false
+        icon.renderIconAuto(allocator, p) catch false
     else
         false;
 
