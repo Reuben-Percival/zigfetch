@@ -9,11 +9,25 @@ pub const Snapshot = struct {
     arch: []u8,
     kernel: []u8,
     uptime: []u8,
+    host_model: []u8,
+    bios: []u8,
+    motherboard: []u8,
     cpu: []u8,
     cpu_cores: []u8,
     cpu_threads: []u8,
+    cpu_freq: []u8,
+    cpu_temp: []u8,
     gpu: []u8,
+    gpu_driver: []u8,
+    resolution: []u8,
     memory: []u8,
+    swap: []u8,
+    disk: []u8,
+    battery: []u8,
+    load: []u8,
+    processes: []u8,
+    network: []u8,
+    audio: []u8,
     packages: []u8,
     shell: []u8,
     terminal: []u8,
@@ -31,11 +45,25 @@ pub const Snapshot = struct {
         allocator.free(self.arch);
         allocator.free(self.kernel);
         allocator.free(self.uptime);
+        allocator.free(self.host_model);
+        allocator.free(self.bios);
+        allocator.free(self.motherboard);
         allocator.free(self.cpu);
         allocator.free(self.cpu_cores);
         allocator.free(self.cpu_threads);
+        allocator.free(self.cpu_freq);
+        allocator.free(self.cpu_temp);
         allocator.free(self.gpu);
+        allocator.free(self.gpu_driver);
+        allocator.free(self.resolution);
         allocator.free(self.memory);
+        allocator.free(self.swap);
+        allocator.free(self.disk);
+        allocator.free(self.battery);
+        allocator.free(self.load);
+        allocator.free(self.processes);
+        allocator.free(self.network);
+        allocator.free(self.audio);
         allocator.free(self.packages);
         allocator.free(self.shell);
         allocator.free(self.terminal);
@@ -347,6 +375,329 @@ fn detectWm(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, "unknown");
 }
 
+fn readTrimmedFile(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const raw = readFileAlloc(allocator, path) catch return null;
+    defer allocator.free(raw);
+    const v = std.mem.trim(u8, firstLineOrFallback(raw, ""), " \t\r");
+    if (v.len == 0) return null;
+    return allocator.dupe(u8, v) catch null;
+}
+
+fn dmiValue(allocator: std.mem.Allocator, field: []const u8) ?[]u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/sys/devices/virtual/dmi/id/{s}", .{field}) catch return null;
+    return readTrimmedFile(allocator, path);
+}
+
+fn detectHostModel(allocator: std.mem.Allocator) ![]u8 {
+    const product = dmiValue(allocator, "product_name");
+    defer if (product) |v| allocator.free(v);
+    const vendor = dmiValue(allocator, "sys_vendor");
+    defer if (vendor) |v| allocator.free(v);
+    if (product) |p| {
+        if (vendor) |v| {
+            if (std.mem.eql(u8, p, v)) return allocator.dupe(u8, p);
+            return std.fmt.allocPrint(allocator, "{s} {s}", .{ v, p });
+        }
+        return allocator.dupe(u8, p);
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectBios(allocator: std.mem.Allocator) ![]u8 {
+    const vendor = dmiValue(allocator, "bios_vendor");
+    defer if (vendor) |v| allocator.free(v);
+    const ver = dmiValue(allocator, "bios_version");
+    defer if (ver) |v| allocator.free(v);
+    if (vendor != null and ver != null) return std.fmt.allocPrint(allocator, "{s} {s}", .{ vendor.?, ver.? });
+    if (vendor) |v| return allocator.dupe(u8, v);
+    if (ver) |v| return allocator.dupe(u8, v);
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectMotherboard(allocator: std.mem.Allocator) ![]u8 {
+    const vendor = dmiValue(allocator, "board_vendor");
+    defer if (vendor) |v| allocator.free(v);
+    const name = dmiValue(allocator, "board_name");
+    defer if (name) |v| allocator.free(v);
+    if (vendor != null and name != null) return std.fmt.allocPrint(allocator, "{s} {s}", .{ vendor.?, name.? });
+    if (name) |v| return allocator.dupe(u8, v);
+    if (vendor) |v| return allocator.dupe(u8, v);
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectGpuDriver(allocator: std.mem.Allocator) ![]u8 {
+    var drm_dir = std.fs.openDirAbsolute("/sys/class/drm", .{ .iterate = true }) catch return allocator.dupe(u8, "unknown");
+    defer drm_dir.close();
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    var found: usize = 0;
+    var it = drm_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, "card")) continue;
+        if (std.mem.indexOfScalar(u8, entry.name, '-')) |_| continue;
+
+        var link_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const link_path = std.fmt.bufPrint(&link_path_buf, "/sys/class/drm/{s}/device/driver", .{entry.name}) catch continue;
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const link = std.fs.readLinkAbsolute(link_path, &target_buf) catch continue;
+        const driver = std.fs.path.basename(link);
+        if (driver.len == 0) continue;
+        if (found > 0) try out.appendSlice(allocator, " | ");
+        try out.appendSlice(allocator, driver);
+        found += 1;
+    }
+    if (found == 0) return allocator.dupe(u8, "unknown");
+    return out.toOwnedSlice(allocator);
+}
+
+fn detectResolutionFromXrandr(allocator: std.mem.Allocator) ?[]u8 {
+    const raw = readCommandOutput(allocator, &[_][]const u8{ "xrandr", "--current" }) orelse return null;
+    defer allocator.free(raw);
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, " connected ") == null) continue;
+        var tok = std.mem.tokenizeAny(u8, line, " \t");
+        _ = tok.next();
+        _ = tok.next();
+        while (tok.next()) |t| {
+            if (std.mem.indexOfScalar(u8, t, 'x') == null) continue;
+            const plus = std.mem.indexOfScalar(u8, t, '+') orelse t.len;
+            if (plus == 0) continue;
+            return allocator.dupe(u8, t[0..plus]) catch null;
+        }
+    }
+    return null;
+}
+
+fn detectResolutionFromDrm(allocator: std.mem.Allocator) ?[]u8 {
+    var drm_dir = std.fs.openDirAbsolute("/sys/class/drm", .{ .iterate = true }) catch return null;
+    defer drm_dir.close();
+    var it = drm_dir.iterate();
+    while ((it.next() catch null)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, "card")) continue;
+        if (std.mem.indexOfScalar(u8, entry.name, '-')) |_| {} else continue;
+
+        var status_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const status_path = std.fmt.bufPrint(&status_path_buf, "/sys/class/drm/{s}/status", .{entry.name}) catch continue;
+        const status = readTrimmedFile(allocator, status_path) orelse continue;
+        defer allocator.free(status);
+        if (!std.mem.eql(u8, status, "connected")) continue;
+
+        var mode_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const mode_path = std.fmt.bufPrint(&mode_path_buf, "/sys/class/drm/{s}/modes", .{entry.name}) catch continue;
+        const mode_raw = readFileAlloc(allocator, mode_path) catch continue;
+        defer allocator.free(mode_raw);
+        const mode = std.mem.trim(u8, firstLineOrFallback(mode_raw, ""), " \t\r");
+        if (mode.len == 0) continue;
+        return allocator.dupe(u8, mode) catch null;
+    }
+    return null;
+}
+
+fn detectResolution(allocator: std.mem.Allocator) ![]u8 {
+    if (detectResolutionFromXrandr(allocator)) |v| return v;
+    if (detectResolutionFromDrm(allocator)) |v| return v;
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectDisk(allocator: std.mem.Allocator) ![]u8 {
+    if (readCommandOutput(allocator, &[_][]const u8{ "df", "-h", "--output=used,size,pcent", "/" })) |raw| {
+        defer allocator.free(raw);
+        var lines = std.mem.splitScalar(u8, raw, '\n');
+        _ = lines.next();
+        const line = lines.next() orelse return allocator.dupe(u8, "unknown");
+        var tok = std.mem.tokenizeAny(u8, line, " \t");
+        const used = tok.next() orelse return allocator.dupe(u8, "unknown");
+        const size = tok.next() orelse return allocator.dupe(u8, "unknown");
+        const pct = tok.next() orelse return allocator.dupe(u8, "unknown");
+        return std.fmt.allocPrint(allocator, "{s} / {s} ({s})", .{ used, size, pct });
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectSwap(allocator: std.mem.Allocator) ![]u8 {
+    const text = readFileAlloc(allocator, "/proc/meminfo") catch return allocator.dupe(u8, "unknown");
+    defer allocator.free(text);
+    var total_kb: u64 = 0;
+    var free_kb: u64 = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "SwapTotal:")) {
+            var tok = std.mem.tokenizeAny(u8, line, " \t");
+            _ = tok.next();
+            if (tok.next()) |n| total_kb = std.fmt.parseUnsigned(u64, n, 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "SwapFree:")) {
+            var tok2 = std.mem.tokenizeAny(u8, line, " \t");
+            _ = tok2.next();
+            if (tok2.next()) |n2| free_kb = std.fmt.parseUnsigned(u64, n2, 10) catch 0;
+        }
+    }
+    if (total_kb == 0) return allocator.dupe(u8, "disabled");
+    const used_kb = if (total_kb > free_kb) total_kb - free_kb else 0;
+    return std.fmt.allocPrint(allocator, "{d} MiB / {d} MiB", .{ used_kb / 1024, total_kb / 1024 });
+}
+
+fn detectBattery(allocator: std.mem.Allocator) ![]u8 {
+    var pwr_dir = std.fs.openDirAbsolute("/sys/class/power_supply", .{ .iterate = true }) catch return allocator.dupe(u8, "unknown");
+    defer pwr_dir.close();
+    var it = pwr_dir.iterate();
+    while ((it.next() catch null)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, "BAT")) continue;
+
+        var cap_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cap_path = std.fmt.bufPrint(&cap_path_buf, "/sys/class/power_supply/{s}/capacity", .{entry.name}) catch continue;
+        const cap = readTrimmedFile(allocator, cap_path) orelse continue;
+        defer allocator.free(cap);
+
+        var status_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const status_path = std.fmt.bufPrint(&status_path_buf, "/sys/class/power_supply/{s}/status", .{entry.name}) catch continue;
+        const status = readTrimmedFile(allocator, status_path) orelse try allocator.dupe(u8, "Unknown");
+        defer allocator.free(status);
+        return std.fmt.allocPrint(allocator, "{s}% ({s})", .{ cap, status });
+    }
+    return allocator.dupe(u8, "not present");
+}
+
+fn detectCpuFreq(allocator: std.mem.Allocator) ![]u8 {
+    const text = readFileAlloc(allocator, "/proc/cpuinfo") catch return allocator.dupe(u8, "unknown");
+    defer allocator.free(text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "cpu MHz")) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+        const mhz = std.fmt.parseFloat(f64, value) catch continue;
+        return std.fmt.allocPrint(allocator, "{d:.2} GHz", .{mhz / 1000.0});
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectCpuTemp(allocator: std.mem.Allocator) ![]u8 {
+    var thermal_dir = std.fs.openDirAbsolute("/sys/class/thermal", .{ .iterate = true }) catch return allocator.dupe(u8, "unknown");
+    defer thermal_dir.close();
+    var it = thermal_dir.iterate();
+    while ((it.next() catch null)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, "thermal_zone")) continue;
+
+        var type_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const type_path = std.fmt.bufPrint(&type_path_buf, "/sys/class/thermal/{s}/type", .{entry.name}) catch continue;
+        const zone_type = readTrimmedFile(allocator, type_path) orelse continue;
+        defer allocator.free(zone_type);
+        const likely_cpu = std.mem.indexOf(u8, zone_type, "cpu") != null or
+            std.mem.indexOf(u8, zone_type, "x86_pkg_temp") != null or
+            std.mem.indexOf(u8, zone_type, "package") != null;
+        if (!likely_cpu) continue;
+
+        var temp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const temp_path = std.fmt.bufPrint(&temp_path_buf, "/sys/class/thermal/{s}/temp", .{entry.name}) catch continue;
+        const temp_raw = readTrimmedFile(allocator, temp_path) orelse continue;
+        defer allocator.free(temp_raw);
+        const milli = std.fmt.parseInt(i64, temp_raw, 10) catch continue;
+        return std.fmt.allocPrint(allocator, "{d:.1} C", .{@as(f64, @floatFromInt(milli)) / 1000.0});
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectLoad(allocator: std.mem.Allocator) ![]u8 {
+    const raw = readFileAlloc(allocator, "/proc/loadavg") catch return allocator.dupe(u8, "unknown");
+    defer allocator.free(raw);
+    var tok = std.mem.tokenizeAny(u8, firstLineOrFallback(raw, ""), " \t");
+    const l1 = tok.next() orelse return allocator.dupe(u8, "unknown");
+    const l5 = tok.next() orelse return allocator.dupe(u8, "unknown");
+    const l15 = tok.next() orelse return allocator.dupe(u8, "unknown");
+    return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ l1, l5, l15 });
+}
+
+fn detectProcesses(allocator: std.mem.Allocator) ![]u8 {
+    var proc = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return allocator.dupe(u8, "unknown");
+    defer proc.close();
+    var it = proc.iterate();
+    var count: usize = 0;
+    while ((it.next() catch null)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (entry.name.len == 0) continue;
+        if (std.ascii.isDigit(entry.name[0])) count += 1;
+    }
+    return std.fmt.allocPrint(allocator, "{d}", .{count});
+}
+
+fn defaultInterfaceFromRoute(allocator: std.mem.Allocator) ?[]u8 {
+    const raw = readFileAlloc(allocator, "/proc/net/route") catch return null;
+    defer allocator.free(raw);
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        var tok = std.mem.tokenizeAny(u8, line, " \t");
+        const iface = tok.next() orelse continue;
+        const dest = tok.next() orelse continue;
+        _ = tok.next();
+        const flags = tok.next() orelse continue;
+        if (!std.mem.eql(u8, dest, "00000000")) continue;
+        const flags_num = std.fmt.parseUnsigned(u32, flags, 16) catch 0;
+        if ((flags_num & 0x2) == 0) continue;
+        return allocator.dupe(u8, iface) catch null;
+    }
+    return null;
+}
+
+fn ifaceIPv4(allocator: std.mem.Allocator, iface: []const u8) ?[]u8 {
+    const raw = readCommandOutput(allocator, &[_][]const u8{ "ip", "-4", "addr", "show", "dev", iface }) orelse return null;
+    defer allocator.free(raw);
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, t, "inet ")) continue;
+        var tok = std.mem.tokenizeAny(u8, t, " \t");
+        _ = tok.next();
+        const cidr = tok.next() orelse continue;
+        const slash = std.mem.indexOfScalar(u8, cidr, '/') orelse cidr.len;
+        return allocator.dupe(u8, cidr[0..slash]) catch null;
+    }
+    return null;
+}
+
+fn ifaceSpeed(allocator: std.mem.Allocator, iface: []const u8) ?[]u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/speed", .{iface}) catch return null;
+    return readTrimmedFile(allocator, path);
+}
+
+fn detectNetwork(allocator: std.mem.Allocator) ![]u8 {
+    const iface = defaultInterfaceFromRoute(allocator) orelse return allocator.dupe(u8, "offline");
+    defer allocator.free(iface);
+    const ip4 = ifaceIPv4(allocator, iface);
+    defer if (ip4) |v| allocator.free(v);
+    const speed = ifaceSpeed(allocator, iface);
+    defer if (speed) |v| allocator.free(v);
+
+    if (ip4 != null and speed != null) return std.fmt.allocPrint(allocator, "{s} {s} ({s} Mb/s)", .{ iface, ip4.?, speed.? });
+    if (ip4 != null) return std.fmt.allocPrint(allocator, "{s} {s}", .{ iface, ip4.? });
+    return allocator.dupe(u8, iface);
+}
+
+fn detectAudio(allocator: std.mem.Allocator) ![]u8 {
+    if (readCommandOutput(allocator, &[_][]const u8{ "pactl", "get-default-sink" })) |raw| {
+        defer allocator.free(raw);
+        const v = std.mem.trim(u8, firstLineOrFallback(raw, ""), " \t\r");
+        if (v.len > 0) return allocator.dupe(u8, v);
+    }
+    if (readCommandOutput(allocator, &[_][]const u8{ "wpctl", "status" })) |raw2| {
+        defer allocator.free(raw2);
+        var lines = std.mem.splitScalar(u8, raw2, '\n');
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (!std.mem.startsWith(u8, t, "*")) continue;
+            return allocator.dupe(u8, t[1..]) catch null;
+        }
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
 fn detectShell(allocator: std.mem.Allocator) ![]u8 {
     const self_pid = std.os.linux.getpid();
     if (self_pid <= 1) return allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown"));
@@ -420,11 +771,25 @@ pub fn collect(allocator: std.mem.Allocator) !Snapshot {
         .arch = try allocator.dupe(u8, @tagName(builtin.cpu.arch)),
         .kernel = readKernel(allocator) catch try allocator.dupe(u8, "unknown"),
         .uptime = readUptime(allocator) catch try allocator.dupe(u8, "unknown"),
+        .host_model = detectHostModel(allocator) catch try allocator.dupe(u8, "unknown"),
+        .bios = detectBios(allocator) catch try allocator.dupe(u8, "unknown"),
+        .motherboard = detectMotherboard(allocator) catch try allocator.dupe(u8, "unknown"),
         .cpu = readCpuModel(allocator) catch try allocator.dupe(u8, "unknown"),
         .cpu_cores = topo.cores,
         .cpu_threads = topo.threads,
+        .cpu_freq = detectCpuFreq(allocator) catch try allocator.dupe(u8, "unknown"),
+        .cpu_temp = detectCpuTemp(allocator) catch try allocator.dupe(u8, "unknown"),
         .gpu = detectGpu(allocator) catch try allocator.dupe(u8, "unknown"),
+        .gpu_driver = detectGpuDriver(allocator) catch try allocator.dupe(u8, "unknown"),
+        .resolution = detectResolution(allocator) catch try allocator.dupe(u8, "unknown"),
         .memory = readMemInfo(allocator) catch try allocator.dupe(u8, "unknown"),
+        .swap = detectSwap(allocator) catch try allocator.dupe(u8, "unknown"),
+        .disk = detectDisk(allocator) catch try allocator.dupe(u8, "unknown"),
+        .battery = detectBattery(allocator) catch try allocator.dupe(u8, "unknown"),
+        .load = detectLoad(allocator) catch try allocator.dupe(u8, "unknown"),
+        .processes = detectProcesses(allocator) catch try allocator.dupe(u8, "unknown"),
+        .network = detectNetwork(allocator) catch try allocator.dupe(u8, "unknown"),
+        .audio = detectAudio(allocator) catch try allocator.dupe(u8, "unknown"),
         .packages = detectPackageCount(allocator) catch try allocator.dupe(u8, "unknown"),
         .shell = detectShell(allocator) catch try allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown")),
         .terminal = try allocator.dupe(u8, std.posix.getenv("TERM_PROGRAM") orelse (std.posix.getenv("TERM") orelse "unknown")),

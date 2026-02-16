@@ -31,11 +31,25 @@ pub const Module = enum {
     arch,
     kernel,
     uptime,
+    host_model,
+    bios,
+    motherboard,
     cpu,
     cpu_cores,
     cpu_threads,
+    cpu_freq,
+    cpu_temp,
     gpu,
+    gpu_driver,
+    resolution,
     memory,
+    swap,
+    disk,
+    battery,
+    load,
+    processes,
+    network,
+    audio,
     packages,
     shell,
     terminal,
@@ -53,12 +67,40 @@ pub const Config = struct {
     compact: bool,
     chafa_width: u8,
     chafa_height: u8,
-    modules: [16]Module,
+    modules: [40]Module,
     module_count: usize,
 };
 
 const all_modules = [_]Module{
-    .os, .arch, .kernel, .uptime, .cpu, .cpu_cores, .cpu_threads, .gpu, .memory, .packages, .shell, .terminal, .session, .desktop, .wm,
+    .os,
+    .arch,
+    .kernel,
+    .uptime,
+    .host_model,
+    .bios,
+    .motherboard,
+    .cpu,
+    .cpu_cores,
+    .cpu_threads,
+    .cpu_freq,
+    .cpu_temp,
+    .gpu,
+    .gpu_driver,
+    .resolution,
+    .memory,
+    .swap,
+    .disk,
+    .battery,
+    .load,
+    .processes,
+    .network,
+    .audio,
+    .packages,
+    .shell,
+    .terminal,
+    .session,
+    .desktop,
+    .wm,
 };
 
 const minimal_modules = [_]Module{
@@ -84,6 +126,40 @@ const default_config_contents =
     \\show_icon_note=false
     \\chafa_size=34x16
     \\modules=os,arch,kernel,uptime,cpu,cpu_cores,cpu_threads,gpu,memory,packages,shell,terminal,session,desktop,wm
+    \\
+    \\# Per-module toggles (applied in file order).
+    \\# Keep core defaults on:
+    \\module.os=true
+    \\module.arch=true
+    \\module.kernel=true
+    \\module.uptime=true
+    \\module.cpu=true
+    \\module.cpu_cores=true
+    \\module.cpu_threads=true
+    \\module.gpu=true
+    \\module.memory=true
+    \\module.packages=true
+    \\module.shell=true
+    \\module.terminal=true
+    \\module.session=true
+    \\module.desktop=true
+    \\module.wm=true
+    \\
+    \\# Optional modules default off:
+    \\module.host_model=false
+    \\module.bios=false
+    \\module.motherboard=false
+    \\module.cpu_freq=false
+    \\module.cpu_temp=false
+    \\module.gpu_driver=false
+    \\module.resolution=false
+    \\module.swap=false
+    \\module.disk=false
+    \\module.battery=false
+    \\module.load=false
+    \\module.processes=false
+    \\module.network=false
+    \\module.audio=false
     \\
 ;
 
@@ -192,11 +268,25 @@ fn parseModule(v: []const u8) ?Module {
     if (std.ascii.eqlIgnoreCase(v, "arch")) return .arch;
     if (std.ascii.eqlIgnoreCase(v, "kernel")) return .kernel;
     if (std.ascii.eqlIgnoreCase(v, "uptime")) return .uptime;
+    if (std.ascii.eqlIgnoreCase(v, "host_model")) return .host_model;
+    if (std.ascii.eqlIgnoreCase(v, "bios")) return .bios;
+    if (std.ascii.eqlIgnoreCase(v, "motherboard")) return .motherboard;
     if (std.ascii.eqlIgnoreCase(v, "cpu")) return .cpu;
     if (std.ascii.eqlIgnoreCase(v, "cpu_cores")) return .cpu_cores;
     if (std.ascii.eqlIgnoreCase(v, "cpu_threads")) return .cpu_threads;
+    if (std.ascii.eqlIgnoreCase(v, "cpu_freq")) return .cpu_freq;
+    if (std.ascii.eqlIgnoreCase(v, "cpu_temp")) return .cpu_temp;
     if (std.ascii.eqlIgnoreCase(v, "gpu")) return .gpu;
+    if (std.ascii.eqlIgnoreCase(v, "gpu_driver")) return .gpu_driver;
+    if (std.ascii.eqlIgnoreCase(v, "resolution")) return .resolution;
     if (std.ascii.eqlIgnoreCase(v, "memory")) return .memory;
+    if (std.ascii.eqlIgnoreCase(v, "swap")) return .swap;
+    if (std.ascii.eqlIgnoreCase(v, "disk")) return .disk;
+    if (std.ascii.eqlIgnoreCase(v, "battery")) return .battery;
+    if (std.ascii.eqlIgnoreCase(v, "load")) return .load;
+    if (std.ascii.eqlIgnoreCase(v, "processes")) return .processes;
+    if (std.ascii.eqlIgnoreCase(v, "network")) return .network;
+    if (std.ascii.eqlIgnoreCase(v, "audio")) return .audio;
     if (std.ascii.eqlIgnoreCase(v, "packages")) return .packages;
     if (std.ascii.eqlIgnoreCase(v, "shell")) return .shell;
     if (std.ascii.eqlIgnoreCase(v, "terminal")) return .terminal;
@@ -231,7 +321,7 @@ fn removeModule(cfg: *Config, m: Module) void {
 }
 
 fn setModulesFromString(cfg: *Config, value: []const u8, mode: enum { replace, add, remove }) bool {
-    var tmp: [16]Module = undefined;
+    var tmp: [40]Module = undefined;
     var count: usize = 0;
     var it = std.mem.splitScalar(u8, value, ',');
     while (it.next()) |raw| {
@@ -300,6 +390,15 @@ fn applyKV(cfg: *Config, key: []const u8, value: []const u8) enum { ok, unknown,
         return if (setModulesFromString(cfg, value, .add)) .ok else .invalid;
     } else if (std.mem.eql(u8, key, "modules-")) {
         return if (setModulesFromString(cfg, value, .remove)) .ok else .invalid;
+    } else if (std.mem.startsWith(u8, key, "module.")) {
+        const m = parseModule(key["module.".len..]) orelse return .unknown;
+        const enabled = parseBool(value) orelse return .invalid;
+        if (enabled) {
+            if (!addModule(cfg, m)) return .invalid;
+        } else {
+            removeModule(cfg, m);
+        }
+        return .ok;
     }
 
     // Backwards compatibility keys.
