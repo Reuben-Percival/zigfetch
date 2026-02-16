@@ -42,17 +42,58 @@ fn printRow(stdout: anytype, cfg: config.Config, row: []const u8) !void {
     }
 }
 
-const Ansi = struct {
-    const reset = "\x1b[0m";
-    // Natural, low-fatigue palette: moss/stone/sand.
-    const frame = "\x1b[38;5;108m";
-    const label = "\x1b[1;38;5;114m";
-    const value = "\x1b[38;5;252m";
-    const sep = "\x1b[38;5;242m";
-    const title_user = "\x1b[1;38;5;151m";
-    const title_host = "\x1b[38;5;109m";
-    const muted = "\x1b[38;5;240m";
+const Palette = struct {
+    frame: []const u8,
+    label: []const u8,
+    value: []const u8,
+    sep: []const u8,
+    title_user: []const u8,
+    title_host: []const u8,
+    muted: []const u8,
 };
+
+const ansi_reset = "\x1b[0m";
+
+fn paletteFor(scheme: config.ColorScheme) Palette {
+    return switch (scheme) {
+        .natural => .{
+            .frame = "\x1b[38;5;108m",
+            .label = "\x1b[1;38;5;114m",
+            .value = "\x1b[38;5;252m",
+            .sep = "\x1b[38;5;242m",
+            .title_user = "\x1b[1;38;5;151m",
+            .title_host = "\x1b[38;5;109m",
+            .muted = "\x1b[38;5;240m",
+        },
+        .ocean => .{
+            .frame = "\x1b[38;5;39m",
+            .label = "\x1b[1;38;5;45m",
+            .value = "\x1b[38;5;255m",
+            .sep = "\x1b[38;5;111m",
+            .title_user = "\x1b[1;38;5;81m",
+            .title_host = "\x1b[38;5;117m",
+            .muted = "\x1b[38;5;67m",
+        },
+        .sunset => .{
+            .frame = "\x1b[38;5;208m",
+            .label = "\x1b[1;38;5;215m",
+            .value = "\x1b[38;5;223m",
+            .sep = "\x1b[38;5;173m",
+            .title_user = "\x1b[1;38;5;222m",
+            .title_host = "\x1b[38;5;209m",
+            .muted = "\x1b[38;5;95m",
+        },
+        .mono => .{
+            .frame = "\x1b[38;5;250m",
+            .label = "\x1b[1;38;5;255m",
+            .value = "\x1b[38;5;252m",
+            .sep = "\x1b[38;5;245m",
+            .title_user = "\x1b[1;38;5;255m",
+            .title_host = "\x1b[38;5;250m",
+            .muted = "\x1b[38;5;242m",
+        },
+    };
+}
 
 fn colorEnabled(cfg: config.Config) bool {
     return switch (cfg.color_mode) {
@@ -74,33 +115,33 @@ fn isAllChar(line: []const u8, ch: u8) bool {
     return true;
 }
 
-fn printLeftSegment(stdout: anytype, line: []const u8, left_width: usize, use_color: bool) !void {
+fn printLeftSegment(stdout: anytype, line: []const u8, left_width: usize, use_color: bool, palette: Palette) !void {
     if (use_color and line.len > 0) {
         if (std.mem.indexOf(u8, line, " : ")) |sep_idx| {
             const label = line[0..sep_idx];
             const value = line[sep_idx + 3 ..];
             try stdout.print("{s}{s}{s}{s} : {s}{s}{s}", .{
-                Ansi.label,
+                palette.label,
                 label,
-                Ansi.reset,
-                Ansi.sep,
-                Ansi.value,
+                ansi_reset,
+                palette.sep,
+                palette.value,
                 value,
-                Ansi.reset,
+                ansi_reset,
             });
         } else if (std.mem.indexOfScalar(u8, line, '@')) |at_idx| {
             const user = line[0..at_idx];
             const host = line[at_idx + 1 ..];
             try stdout.print("{s}{s}{s}@{s}{s}{s}", .{
-                Ansi.title_user,
+                palette.title_user,
                 user,
-                Ansi.reset,
-                Ansi.title_host,
+                ansi_reset,
+                palette.title_host,
                 host,
-                Ansi.reset,
+                ansi_reset,
             });
         } else if (isAllChar(line, '-')) {
-            try stdout.print("{s}{s}{s}", .{ Ansi.muted, line, Ansi.reset });
+            try stdout.print("{s}{s}{s}", .{ palette.muted, line, ansi_reset });
         } else {
             try stdout.print("{s}", .{line});
         }
@@ -120,18 +161,19 @@ fn printRowComposed(
     right_line: []const u8,
     right_width: usize,
     use_color: bool,
+    palette: Palette,
 ) !void {
     switch (cfg.border) {
         .rounded => {
-            if (use_color) try stdout.print("  {s}│{s}", .{ Ansi.frame, Ansi.reset }) else try stdout.print("  │", .{});
+            if (use_color) try stdout.print("  {s}│{s}", .{ palette.frame, ansi_reset }) else try stdout.print("  │", .{});
         },
         .ascii => {
-            if (use_color) try stdout.print("  {s}|{s}", .{ Ansi.frame, Ansi.reset }) else try stdout.print("  |", .{});
+            if (use_color) try stdout.print("  {s}|{s}", .{ palette.frame, ansi_reset }) else try stdout.print("  |", .{});
         },
         .none => try stdout.print("  ", .{}),
     }
 
-    try printLeftSegment(stdout, left_line, left_width, use_color);
+    try printLeftSegment(stdout, left_line, left_width, use_color, palette);
 
     if (right_width > 0) {
         try stdout.print("  {s}", .{right_line});
@@ -142,10 +184,10 @@ fn printRowComposed(
 
     switch (cfg.border) {
         .rounded => {
-            if (use_color) try stdout.print("{s}│{s}\n", .{ Ansi.frame, Ansi.reset }) else try stdout.print("│\n", .{});
+            if (use_color) try stdout.print("{s}│{s}\n", .{ palette.frame, ansi_reset }) else try stdout.print("│\n", .{});
         },
         .ascii => {
-            if (use_color) try stdout.print("{s}|{s}\n", .{ Ansi.frame, Ansi.reset }) else try stdout.print("|\n", .{});
+            if (use_color) try stdout.print("{s}|{s}\n", .{ palette.frame, ansi_reset }) else try stdout.print("|\n", .{});
         },
         .none => try stdout.print("\n", .{}),
     }
@@ -292,6 +334,7 @@ pub fn print(
 ) !void {
     try stdout.print("\n", .{});
     const use_color = colorEnabled(cfg);
+    const palette = paletteFor(cfg.color_scheme);
 
     const show_icon_path = switch (cfg.icon_mode) {
         .off => false,
@@ -382,9 +425,9 @@ pub fn print(
         }
     }
 
-    if (use_color and cfg.border != .none) try stdout.print("{s}", .{Ansi.frame});
+    if (use_color and cfg.border != .none) try stdout.print("{s}", .{palette.frame});
     try printFrameTop(stdout, cfg, total_width);
-    if (use_color and cfg.border != .none) try stdout.print("{s}", .{Ansi.reset});
+    if (use_color and cfg.border != .none) try stdout.print("{s}", .{ansi_reset});
 
     const rows = @max(left_count, right_count);
     var row_i: usize = 0;
@@ -397,11 +440,11 @@ pub fn print(
             utf8PrefixByColumns(right_lines[row_i], right_width)
         else
             "";
-        try printRowComposed(stdout, cfg, left_line, left_width, right_line, right_width, use_color);
+        try printRowComposed(stdout, cfg, left_line, left_width, right_line, right_width, use_color, palette);
     }
 
-    if (use_color and cfg.border != .none) try stdout.print("{s}", .{Ansi.frame});
+    if (use_color and cfg.border != .none) try stdout.print("{s}", .{palette.frame});
     try printFrameBottom(stdout, cfg, total_width);
-    if (use_color and cfg.border != .none) try stdout.print("{s}", .{Ansi.reset});
+    if (use_color and cfg.border != .none) try stdout.print("{s}", .{ansi_reset});
     try stdout.print("\n", .{});
 }

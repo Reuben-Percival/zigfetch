@@ -12,6 +12,13 @@ pub const ColorMode = enum {
     off,
 };
 
+pub const ColorScheme = enum {
+    natural,
+    ocean,
+    sunset,
+    mono,
+};
+
 pub const IconMode = enum {
     auto,
     off,
@@ -61,6 +68,7 @@ pub const Module = enum {
 pub const Config = struct {
     preset: Preset,
     color_mode: ColorMode,
+    color_scheme: ColorScheme,
     border: BorderStyle,
     icon_mode: IconMode,
     show_icon_note: bool,
@@ -114,12 +122,15 @@ const default_config_contents =
     \\# High-impact keys:
     \\# preset = clean|minimal|fancy|plain
     \\# color  = auto|on|off
+    \\# color_scheme (alias: scheme) = natural|ocean|sunset|mono
     \\# style  = rounded|ascii|none
     \\# icon   = auto|off|path|force
     \\# modules = comma-separated module names
+    \\# module.<name> = true|false
     \\#
     \\preset=clean
     \\color=auto
+    \\color_scheme=natural
     \\style=none
     \\icon=auto
     \\compact=false
@@ -167,6 +178,7 @@ pub fn applyPreset(cfg: *Config, preset: Preset) void {
     cfg.* = .{
         .preset = preset,
         .color_mode = .auto,
+        .color_scheme = .natural,
         .border = .rounded,
         .icon_mode = .auto,
         .show_icon_note = true,
@@ -195,6 +207,7 @@ pub fn applyPreset(cfg: *Config, preset: Preset) void {
             setModules(cfg, &all_modules);
             cfg.border = .rounded;
             cfg.color_mode = .on;
+            cfg.color_scheme = .sunset;
             cfg.icon_mode = .auto;
             cfg.compact = false;
             cfg.show_icon_note = true;
@@ -205,6 +218,7 @@ pub fn applyPreset(cfg: *Config, preset: Preset) void {
             setModules(cfg, &all_modules);
             cfg.border = .ascii;
             cfg.color_mode = .off;
+            cfg.color_scheme = .mono;
             cfg.icon_mode = .path;
             cfg.show_icon_note = false;
         },
@@ -244,6 +258,14 @@ fn parseColorMode(v: []const u8) ?ColorMode {
     if (std.ascii.eqlIgnoreCase(v, "on")) return .on;
     if (std.ascii.eqlIgnoreCase(v, "off")) return .off;
     if (parseBool(v)) |b| return if (b) .on else .off; // backwards compatibility
+    return null;
+}
+
+fn parseColorScheme(v: []const u8) ?ColorScheme {
+    if (std.ascii.eqlIgnoreCase(v, "natural")) return .natural;
+    if (std.ascii.eqlIgnoreCase(v, "ocean")) return .ocean;
+    if (std.ascii.eqlIgnoreCase(v, "sunset")) return .sunset;
+    if (std.ascii.eqlIgnoreCase(v, "mono")) return .mono;
     return null;
 }
 
@@ -363,6 +385,9 @@ fn applyKV(cfg: *Config, key: []const u8, value: []const u8) enum { ok, unknown,
         return .ok;
     } else if (std.mem.eql(u8, key, "color")) {
         cfg.color_mode = parseColorMode(value) orelse return .invalid;
+        return .ok;
+    } else if (std.mem.eql(u8, key, "color_scheme") or std.mem.eql(u8, key, "scheme")) {
+        cfg.color_scheme = parseColorScheme(value) orelse return .invalid;
         return .ok;
     } else if (std.mem.eql(u8, key, "style") or std.mem.eql(u8, key, "border")) {
         cfg.border = parseBorder(value) orelse return .invalid;
@@ -569,10 +594,11 @@ pub fn doctorConfig(allocator: std.mem.Allocator, out: anytype) !void {
     var cfg = defaults();
     try doctorFromPath(allocator, out, path, &cfg);
 
-    try out.print("Doctor finished. Effective preset={s}, style={s}, icon={s}, modules={d}\n", .{
+    try out.print("Doctor finished. Effective preset={s}, style={s}, icon={s}, scheme={s}, modules={d}\n", .{
         @tagName(cfg.preset),
         @tagName(cfg.border),
         @tagName(cfg.icon_mode),
+        @tagName(cfg.color_scheme),
         cfg.module_count,
     });
 }

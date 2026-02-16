@@ -1,6 +1,6 @@
 # zigfetch Config Wiki
 
-This page documents `zigfetch` runtime config and behavior.
+This document is the canonical reference for runtime configuration.
 
 ## 1. Config Path
 
@@ -9,30 +9,32 @@ Resolution order:
 1. `ZIGFETCH_CONFIG`
 2. `~/.config/zigfetch/config.conf`
 
-If `ZIGFETCH_CONFIG` is not set and the default file is missing, `zigfetch` auto-creates it.
+If `ZIGFETCH_CONFIG` is not set and the default config is missing, zigfetch auto-creates it.
 
-Manual setup:
+Commands:
 
 ```sh
 zigfetch --init-config
 zigfetch --init-config --force
+zigfetch --doctor-config
 ```
 
-## 2. File Format
+## 2. File Rules
 
 - One setting per line: `key=value`
 - Leading/trailing whitespace is ignored
 - Comments start with `#` or `;`
 - Empty lines are ignored
 
-Config is applied top-to-bottom.
+Evaluation is top-to-bottom.
 
-Important ordering rule:
+Important behavior:
 
-- `preset=...` resets all fields to that preset baseline
-- Later keys override preset values
+- `preset=...` resets the config baseline
+- Keys below that line override preset values
+- `modules`, `modules+`, `modules-`, and `module.<name>=...` apply in file order
 
-## 3. High-Impact Keys
+## 3. Keys
 
 ### `preset`
 
@@ -42,6 +44,10 @@ Values: `clean`, `minimal`, `fancy`, `plain`
 
 Values: `auto`, `on`, `off`
 
+### `color_scheme` (alias: `scheme`)
+
+Values: `natural`, `ocean`, `sunset`, `mono`
+
 ### `style`
 
 Values: `rounded`, `ascii`, `none`
@@ -50,40 +56,10 @@ Values: `rounded`, `ascii`, `none`
 
 Values: `auto`, `off`, `path`, `force`
 
-- `auto`: render icon when terminal supports it; otherwise fallback behavior
+- `auto`: try renderer based on terminal support
 - `off`: disable icon rendering and icon path output
-- `path`: show icon path only
-- `force`: attempt icon rendering even in limited terminal detection cases
-
-### `modules`
-
-Comma-separated ordered list.
-
-Supported modules:
-
-- `os`
-- `arch`
-- `kernel`
-- `uptime`
-- `cpu`
-- `cpu_cores`
-- `cpu_threads`
-- `gpu`
-- `memory`
-- `packages`
-- `shell`
-- `terminal`
-- `session`
-- `desktop`
-- `wm`
-
-Example:
-
-```ini
-modules=os,kernel,uptime,cpu,memory,gpu
-```
-
-## 4. Additional Keys
+- `path`: only print icon path
+- `force`: force icon rendering attempts
 
 ### `compact`
 
@@ -95,100 +71,128 @@ Values: `true`, `false`
 
 ### `chafa_size`
 
-Format: `WIDTHxHEIGHT` (example `34x16`)
+Format: `WIDTHxHEIGHT` (example: `34x16`)
 
-Backward-compatible forms also accepted:
+Also accepted:
 
 - `chafa_width`
 - `chafa_height`
 
-## 5. Module Editing Operations
+## 4. Module Configuration
 
-### Replace
+### Replace full order
 
 ```ini
-modules=os,uptime,memory
+modules=os,arch,kernel,uptime,cpu,gpu,memory,shell,terminal
 ```
 
-### Add
+### Incremental edits
 
 ```ini
-modules+=packages,wm
-```
-
-### Remove
-
-```ini
+modules+=battery,cpu_temp,audio
 modules-=desktop,wm
 ```
+
+### Per-module booleans
+
+```ini
+module.cpu_temp=true
+module.battery=true
+module.audio=true
+module.host_model=false
+```
+
+## 5. Supported Modules
+
+- `os`
+- `arch`
+- `kernel`
+- `uptime`
+- `host_model`
+- `bios`
+- `motherboard`
+- `cpu`
+- `cpu_cores`
+- `cpu_threads`
+- `cpu_freq`
+- `cpu_temp`
+- `gpu`
+- `gpu_driver`
+- `resolution`
+- `memory`
+- `swap`
+- `disk`
+- `battery`
+- `load`
+- `processes`
+- `network`
+- `audio`
+- `packages`
+- `shell`
+- `terminal`
+- `session`
+- `desktop`
+- `wm`
 
 ## 6. Preset Baselines
 
 ### `clean`
 
-- style: `none`
-- color: `auto`
-- icon: `auto`
-- show_icon_note: `false`
-- compact: `false`
-- modules: full list
+- `style=none`
+- `color=auto`
+- `color_scheme=natural`
+- `icon=auto`
+- `compact=false`
+- `show_icon_note=false`
+- `chafa_size=34x16`
+- modules: full internal set, then default template toggles optional modules off
 
 ### `minimal`
 
-- style: `none`
-- color: `off`
-- icon: `off`
-- show_icon_note: `false`
-- compact: `true`
-- modules: reduced list
+- `style=none`
+- `color=off`
+- `color_scheme=natural`
+- `icon=off`
+- `compact=true`
+- `show_icon_note=false`
+- reduced module set: `os,kernel,uptime,memory,shell,terminal`
 
 ### `fancy`
 
-- style: `rounded`
-- color: `on`
-- icon: `auto`
-- show_icon_note: `true`
-- compact: `false`
-- chafa_size: `40x18`
-- modules: full list
+- `style=rounded`
+- `color=on`
+- `color_scheme=sunset`
+- `icon=auto`
+- `compact=false`
+- `show_icon_note=true`
+- `chafa_size=40x18`
 
 ### `plain`
 
-- style: `ascii`
-- color: `off`
-- icon: `path`
-- show_icon_note: `false`
-- compact: `false`
-- modules: full list
+- `style=ascii`
+- `color=off`
+- `color_scheme=mono`
+- `icon=path`
+- `compact=false`
+- `show_icon_note=false`
 
-## 7. Environment Variables
+## 7. Audio Module
 
-### `ZIGFETCH_CONFIG`
+Audio detection order:
+
+1. `wpctl inspect @DEFAULT_AUDIO_SINK@` (`node.description`, `node.nick`, `node.name`)
+2. `pactl info` (`Default Sink:`)
+3. `pactl get-default-sink`
+
+If none are available, output is `unknown`.
+
+## 8. Environment Variables
 
 ```sh
 ZIGFETCH_CONFIG=/path/to/config.conf zigfetch
+ZIGFETCH_NO_ICON=1 zigfetch
+ZIGFETCH_FORCE_ICON=1 zigfetch
 ```
-
-### `ZIGFETCH_NO_ICON=1`
-
-Disables icon rendering.
-
-### `ZIGFETCH_FORCE_ICON=1`
-
-Forces icon render attempts (unless icon mode is explicitly `off` or `path`).
-
-## 8. Config Doctor
-
-```sh
-zigfetch --doctor-config
-```
-
-Doctor reports:
-
-- syntax errors
-- unknown keys
-- invalid values
-- effective resolved summary
 
 ## 9. Backward-Compatible Keys
 
@@ -196,16 +200,3 @@ Doctor reports:
 - `show_icon` -> `icon`
 - `force_icon` -> `icon=force`
 - `show_icon_path` -> `icon=path` or `icon=off`
-
-## 10. Default Generated Config
-
-```ini
-preset=clean
-color=auto
-style=none
-icon=auto
-compact=false
-show_icon_note=false
-chafa_size=34x16
-modules=os,arch,kernel,uptime,cpu,cpu_cores,cpu_threads,gpu,memory,packages,shell,terminal,session,desktop,wm
-```

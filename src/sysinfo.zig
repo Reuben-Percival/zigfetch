@@ -664,7 +664,25 @@ fn ifaceIPv4(allocator: std.mem.Allocator, iface: []const u8) ?[]u8 {
 fn ifaceSpeed(allocator: std.mem.Allocator, iface: []const u8) ?[]u8 {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/speed", .{iface}) catch return null;
-    return readTrimmedFile(allocator, path);
+    if (readCommandOutput(allocator, &[_][]const u8{ "cat", path })) |raw| {
+        defer allocator.free(raw);
+        const speed = std.mem.trim(u8, firstLineOrFallback(raw, ""), " \t\r");
+        if (speed.len > 0 and !std.mem.eql(u8, speed, "unknown")) {
+            return allocator.dupe(u8, speed) catch null;
+        }
+    }
+
+    if (readCommandOutput(allocator, &[_][]const u8{ "ethtool", iface })) |ethtool_out| {
+        defer allocator.free(ethtool_out);
+        var lines = std.mem.splitScalar(u8, ethtool_out, '\n');
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (!std.mem.startsWith(u8, t, "Speed:")) continue;
+            const v = std.mem.trim(u8, t["Speed:".len..], " \t");
+            if (v.len > 0 and !std.mem.eql(u8, v, "Unknown!")) return allocator.dupe(u8, v) catch null;
+        }
+    }
+    return null;
 }
 
 fn detectNetwork(allocator: std.mem.Allocator) ![]u8 {
@@ -681,21 +699,41 @@ fn detectNetwork(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn detectAudio(allocator: std.mem.Allocator) ![]u8 {
-    if (readCommandOutput(allocator, &[_][]const u8{ "pactl", "get-default-sink" })) |raw| {
+    if (readCommandOutput(allocator, &[_][]const u8{ "wpctl", "inspect", "@DEFAULT_AUDIO_SINK@" })) |raw| {
         defer allocator.free(raw);
-        const v = std.mem.trim(u8, firstLineOrFallback(raw, ""), " \t\r");
-        if (v.len > 0) return allocator.dupe(u8, v);
+        if (parseInspectValue(allocator, raw, "node.description = ")) |v| return v;
+        if (parseInspectValue(allocator, raw, "node.nick = ")) |v| return v;
+        if (parseInspectValue(allocator, raw, "node.name = ")) |v| return v;
     }
-    if (readCommandOutput(allocator, &[_][]const u8{ "wpctl", "status" })) |raw2| {
-        defer allocator.free(raw2);
-        var lines = std.mem.splitScalar(u8, raw2, '\n');
+    if (readCommandOutput(allocator, &[_][]const u8{ "pactl", "info" })) |info| {
+        defer allocator.free(info);
+        var lines = std.mem.splitScalar(u8, info, '\n');
         while (lines.next()) |line| {
             const t = std.mem.trim(u8, line, " \t\r");
-            if (!std.mem.startsWith(u8, t, "*")) continue;
-            return allocator.dupe(u8, t[1..]) catch null;
+            if (!std.mem.startsWith(u8, t, "Default Sink:")) continue;
+            const v = std.mem.trim(u8, t["Default Sink:".len..], " \t");
+            if (v.len > 0) return allocator.dupe(u8, v);
         }
     }
+    if (readCommandOutput(allocator, &[_][]const u8{ "pactl", "get-default-sink" })) |sink| {
+        defer allocator.free(sink);
+        const v = std.mem.trim(u8, firstLineOrFallback(sink, ""), " \t\r");
+        if (v.len > 0) return allocator.dupe(u8, v);
+    }
     return allocator.dupe(u8, "unknown");
+}
+
+fn parseInspectValue(allocator: std.mem.Allocator, text: []const u8, key_prefix: []const u8) ?[]u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, t, key_prefix)) continue;
+        var v = std.mem.trim(u8, t[key_prefix.len..], " \t");
+        if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+        if (v.len == 0) return null;
+        return allocator.dupe(u8, v) catch null;
+    }
+    return null;
 }
 
 fn detectShell(allocator: std.mem.Allocator) ![]u8 {
