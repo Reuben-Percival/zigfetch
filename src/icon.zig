@@ -223,9 +223,6 @@ pub fn renderIconAutoWithConfig(
     const force_icon = (cfg.icon_mode == .force) or env_force_icon;
     if (!force_icon and !stdoutLooksInteractive()) return false;
 
-    const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
-    defer allocator.free(size);
-    if (try runRenderer(allocator, &[_][]const u8{ "chafa", "--size", size, icon_path })) return true;
     if (inWezTerm()) {
         const w = try std.fmt.allocPrint(allocator, "{d}", .{cfg.chafa_width});
         defer allocator.free(w);
@@ -235,6 +232,9 @@ pub fn renderIconAutoWithConfig(
         if (try runRenderer(allocator, &[_][]const u8{ "kitten", "icat", "--align", "left", icon_path })) return true;
         if (try runRenderer(allocator, &[_][]const u8{ "kitty", "+kitten", "icat", "--align", "left", icon_path })) return true;
     }
+    const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
+    defer allocator.free(size);
+    if (try runRenderer(allocator, &[_][]const u8{ "chafa", "--size", size, icon_path })) return true;
     return false;
 }
 
@@ -258,5 +258,14 @@ pub fn getRightSideIconBlock(
     const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
     defer allocator.free(size);
     // Use chafa text output so we can place it inside the box on the right.
-    return runRendererCapture(allocator, &[_][]const u8{ "chafa", "--size", size, icon_path });
+    return runRendererCapture(allocator, &[_][]const u8{
+        "chafa",
+        "--format",
+        "symbols",
+        "--colors",
+        "none",
+        "--size",
+        size,
+        icon_path,
+    });
 }

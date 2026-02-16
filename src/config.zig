@@ -78,12 +78,11 @@ const default_config_contents =
     \\#
     \\preset=clean
     \\color=auto
-    \\style=rounded
+    \\style=none
     \\icon=auto
     \\compact=false
-    \\show_icon_note=true
+    \\show_icon_note=false
     \\chafa_size=34x16
-    \\modules=os,arch,kernel,uptime,cpu,memory,packages,shell,terminal,session,desktop,wm
     \\modules=os,arch,kernel,uptime,cpu,cpu_cores,cpu_threads,gpu,memory,packages,shell,terminal,session,desktop,wm
     \\
 ;

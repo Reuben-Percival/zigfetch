@@ -53,10 +53,19 @@ pub fn main() !void {
     );
     defer if (icon_path) |p| allocator.free(p);
 
-    const icon_rendered = if (icon_path) |p|
-        icon.renderIconAutoWithConfig(allocator, p, cfg) catch false
+    const right_icon_block = if (icon_path != null)
+        icon.getRightSideIconBlock(allocator, icon_path.?, cfg) catch null
     else
-        false;
+        null;
+    defer if (right_icon_block) |b| allocator.free(b);
 
-    try render.print(stdout, snapshot, icon_path, icon_rendered, cfg);
+    var printed_real_icon = false;
+    if (right_icon_block == null) {
+        if (icon_path) |p| {
+            printed_real_icon = icon.renderIconAutoWithConfig(allocator, p, cfg) catch false;
+            if (printed_real_icon) try stdout.print("\n", .{});
+        }
+    }
+
+    try render.print(stdout, snapshot, if (printed_real_icon) null else icon_path, right_icon_block, cfg);
 }

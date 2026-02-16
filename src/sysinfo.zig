@@ -10,6 +10,9 @@ pub const Snapshot = struct {
     kernel: []u8,
     uptime: []u8,
     cpu: []u8,
+    cpu_cores: []u8,
+    cpu_threads: []u8,
+    gpu: []u8,
     memory: []u8,
     packages: []u8,
     shell: []u8,
@@ -29,6 +32,9 @@ pub const Snapshot = struct {
         allocator.free(self.kernel);
         allocator.free(self.uptime);
         allocator.free(self.cpu);
+        allocator.free(self.cpu_cores);
+        allocator.free(self.cpu_threads);
+        allocator.free(self.gpu);
         allocator.free(self.memory);
         allocator.free(self.packages);
         allocator.free(self.shell);
@@ -124,6 +130,178 @@ fn readCpuModel(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, "unknown");
 }
 
+const CpuTopology = struct { cores: []u8, threads: []u8 };
+
+fn readCpuTopology(allocator: std.mem.Allocator) !CpuTopology {
+    const text = try readFileAlloc(allocator, "/proc/cpuinfo");
+    defer allocator.free(text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var threads: u32 = 0;
+    var cores_per_socket: u32 = 0;
+    var sockets_seen: [64]bool = [_]bool{false} ** 64;
+    var sockets: u32 = 0;
+
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "processor")) {
+            threads += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "cpu cores")) {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const v = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+            if (cores_per_socket == 0) cores_per_socket = std.fmt.parseUnsigned(u32, v, 10) catch 0;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "physical id")) {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const v = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+            const id = std.fmt.parseUnsigned(u8, v, 10) catch continue;
+            if (id < sockets_seen.len and !sockets_seen[id]) {
+                sockets_seen[id] = true;
+                sockets += 1;
+            }
+        }
+    }
+
+    const cores_count: u32 = if (cores_per_socket > 0 and sockets > 0)
+        cores_per_socket * sockets
+    else if (cores_per_socket > 0)
+        cores_per_socket
+    else
+        threads;
+
+    return .{
+        .cores = try std.fmt.allocPrint(allocator, "{d}", .{cores_count}),
+        .threads = try std.fmt.allocPrint(allocator, "{d}", .{threads}),
+    };
+}
+
+fn readCommandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+
+    child.spawn() catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return null,
+    };
+    const out_file = child.stdout orelse {
+        _ = child.wait() catch {};
+        return null;
+    };
+    const out = out_file.readToEndAlloc(allocator, 128 * 1024) catch {
+        _ = child.wait() catch {};
+        return null;
+    };
+    const term = child.wait() catch {
+        allocator.free(out);
+        return null;
+    };
+    return switch (term) {
+        .Exited => |code| if (code == 0) out else blk: {
+            allocator.free(out);
+            break :blk null;
+        },
+        else => blk: {
+            allocator.free(out);
+            break :blk null;
+        },
+    };
+}
+
+fn detectGpu(allocator: std.mem.Allocator) ![]u8 {
+    if (readCommandOutput(allocator, &[_][]const u8{ "lspci" })) |raw| {
+        defer allocator.free(raw);
+        var joined: std.ArrayList(u8) = .{};
+        defer joined.deinit(allocator);
+        var lines = std.mem.splitScalar(u8, raw, '\n');
+        var found: usize = 0;
+        while (lines.next()) |line| {
+            var value: ?[]const u8 = null;
+            if (std.mem.indexOf(u8, line, " VGA compatible controller: ")) |idx| {
+                value = std.mem.trim(u8, line[idx + 27 ..], " \t\r");
+            } else if (std.mem.indexOf(u8, line, " 3D controller: ")) |idx2| {
+                value = std.mem.trim(u8, line[idx2 + 16 ..], " \t\r");
+            } else if (std.mem.indexOf(u8, line, " Display controller: ")) |idx3| {
+                value = std.mem.trim(u8, line[idx3 + 21 ..], " \t\r");
+            }
+            if (value) |gpu_name| {
+                const clean = sanitizeGpuName(gpu_name);
+                if (clean.len == 0) continue;
+                if (found > 0) try joined.appendSlice(allocator, " | ");
+                try joined.appendSlice(allocator, clean);
+                found += 1;
+            }
+        }
+        if (found > 0) return joined.toOwnedSlice(allocator);
+    }
+
+    const drm = detectGpuFromDrm(allocator) catch null;
+    if (drm) |v| return v;
+    return allocator.dupe(u8, "unknown");
+}
+
+fn sanitizeGpuName(name: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, name, " \t\r");
+    if (std.mem.indexOf(u8, trimmed, " (rev ")) |rev_idx| return trimmed[0..rev_idx];
+    return trimmed;
+}
+
+fn parseHexId(raw: []const u8) ?u16 {
+    var value = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.startsWith(u8, value, "0x")) value = value[2..];
+    if (value.len == 0) return null;
+    return std.fmt.parseUnsigned(u16, value, 16) catch null;
+}
+
+fn gpuVendorName(vendor_id: u16) []const u8 {
+    return switch (vendor_id) {
+        0x10de => "NVIDIA",
+        0x1002, 0x1022 => "AMD",
+        0x8086 => "Intel",
+        0x13b5 => "ARM",
+        0x5143 => "Qualcomm",
+        else => "GPU",
+    };
+}
+
+fn detectGpuFromDrm(allocator: std.mem.Allocator) !?[]u8 {
+    var drm_dir = std.fs.openDirAbsolute("/sys/class/drm", .{ .iterate = true }) catch return null;
+    defer drm_dir.close();
+
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    var found: usize = 0;
+    var it = drm_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, "card")) continue;
+        if (std.mem.indexOfScalar(u8, entry.name, '-')) |_| continue;
+
+        var vendor_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const vendor_path = std.fmt.bufPrint(&vendor_path_buf, "/sys/class/drm/{s}/device/vendor", .{entry.name}) catch continue;
+        const vendor_raw = readFileAlloc(allocator, vendor_path) catch continue;
+        defer allocator.free(vendor_raw);
+        const vendor_id = parseHexId(vendor_raw) orelse continue;
+
+        var device_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const device_path = std.fmt.bufPrint(&device_path_buf, "/sys/class/drm/{s}/device/device", .{entry.name}) catch continue;
+        const device_raw = readFileAlloc(allocator, device_path) catch continue;
+        defer allocator.free(device_raw);
+        const device_id = parseHexId(device_raw) orelse 0;
+
+        if (found > 0) try out.appendSlice(allocator, " | ");
+        const label = try std.fmt.allocPrint(allocator, "{s} ({x:0>4}:{x:0>4})", .{ gpuVendorName(vendor_id), vendor_id, device_id });
+        defer allocator.free(label);
+        try out.appendSlice(allocator, label);
+        found += 1;
+    }
+    if (found == 0) return null;
+    const owned = try out.toOwnedSlice(allocator);
+    return owned;
+}
+
 fn baseName(path: []const u8) []const u8 {
     return std.fs.path.basename(path);
 }
@@ -177,6 +355,10 @@ pub fn collect(allocator: std.mem.Allocator) !Snapshot {
         .logo = null,
     };
     defer os.deinit(allocator);
+    const topo: CpuTopology = readCpuTopology(allocator) catch .{
+        .cores = try allocator.dupe(u8, "unknown"),
+        .threads = try allocator.dupe(u8, "unknown"),
+    };
 
     return .{
         .user = try allocator.dupe(u8, std.posix.getenv("USER") orelse "unknown"),
@@ -186,6 +368,9 @@ pub fn collect(allocator: std.mem.Allocator) !Snapshot {
         .kernel = readKernel(allocator) catch try allocator.dupe(u8, "unknown"),
         .uptime = readUptime(allocator) catch try allocator.dupe(u8, "unknown"),
         .cpu = readCpuModel(allocator) catch try allocator.dupe(u8, "unknown"),
+        .cpu_cores = topo.cores,
+        .cpu_threads = topo.threads,
+        .gpu = detectGpu(allocator) catch try allocator.dupe(u8, "unknown"),
         .memory = readMemInfo(allocator) catch try allocator.dupe(u8, "unknown"),
         .packages = detectPackageCount(allocator) catch try allocator.dupe(u8, "unknown"),
         .shell = try allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown")),
