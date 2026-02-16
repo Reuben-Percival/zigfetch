@@ -149,6 +149,41 @@ fn runRenderer(allocator: std.mem.Allocator, argv: []const []const u8) !bool {
     };
 }
 
+fn runRendererCapture(allocator: std.mem.Allocator, argv: []const []const u8) !?[]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+
+    child.spawn() catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+
+    const out_file = child.stdout orelse {
+        _ = child.wait() catch {};
+        return null;
+    };
+    const out = out_file.readToEndAlloc(allocator, 256 * 1024) catch {
+        _ = child.wait() catch {};
+        return null;
+    };
+    const term = child.wait() catch {
+        allocator.free(out);
+        return null;
+    };
+    return switch (term) {
+        .Exited => |code| if (code == 0) out else blk: {
+            allocator.free(out);
+            break :blk null;
+        },
+        else => blk: {
+            allocator.free(out);
+            break :blk null;
+        },
+    };
+}
+
 fn stdoutLooksInteractive() bool {
     const posix = std.posix;
     if (!posix.isatty(posix.STDOUT_FILENO)) return false;
@@ -176,7 +211,7 @@ pub fn renderIconAutoWithConfig(
     icon_path: []const u8,
     cfg: config.Config,
 ) !bool {
-    if (!cfg.show_icon) return false;
+    if (cfg.icon_mode == .off or cfg.icon_mode == .path) return false;
     if (std.posix.getenv("ZIGFETCH_NO_ICON")) |v| {
         if (std.mem.eql(u8, v, "1")) return false;
     }
@@ -185,7 +220,7 @@ pub fn renderIconAutoWithConfig(
         std.mem.eql(u8, v, "1")
     else
         false;
-    const force_icon = cfg.force_icon or env_force_icon;
+    const force_icon = (cfg.icon_mode == .force) or env_force_icon;
     if (!force_icon and !stdoutLooksInteractive()) return false;
 
     const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
@@ -201,4 +236,27 @@ pub fn renderIconAutoWithConfig(
         if (try runRenderer(allocator, &[_][]const u8{ "kitty", "+kitten", "icat", "--align", "left", icon_path })) return true;
     }
     return false;
+}
+
+pub fn getRightSideIconBlock(
+    allocator: std.mem.Allocator,
+    icon_path: []const u8,
+    cfg: config.Config,
+) !?[]u8 {
+    if (cfg.icon_mode == .off or cfg.icon_mode == .path) return null;
+    if (std.posix.getenv("ZIGFETCH_NO_ICON")) |v| {
+        if (std.mem.eql(u8, v, "1")) return null;
+    }
+
+    const env_force_icon = if (std.posix.getenv("ZIGFETCH_FORCE_ICON")) |v|
+        std.mem.eql(u8, v, "1")
+    else
+        false;
+    const force_icon = (cfg.icon_mode == .force) or env_force_icon;
+    if (!force_icon and !stdoutLooksInteractive()) return null;
+
+    const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
+    defer allocator.free(size);
+    // Use chafa text output so we can place it inside the box on the right.
+    return runRendererCapture(allocator, &[_][]const u8{ "chafa", "--size", size, icon_path });
 }

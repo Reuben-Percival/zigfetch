@@ -1,16 +1,8 @@
 # zigfetch
 
-A neat, fastfetch-inspired system info tool in Zig with real distro icon support and runtime config.
+A fastfetch-inspired system info tool written in Zig, with a simpler high-impact config model.
 
-## Highlights
-
-- Fastfetch-style layout with aligned modules
-- Real distro icon discovery from system icon files
-- Inline icon rendering with `chafa`, `wezterm imgcat`, or kitty image tools
-- Runtime config file loading (no rebuild required)
-- Optional frame styles, colors, compact mode, and icon behavior controls
-
-## Build & Run
+## Quick Start
 
 ```sh
 zig build
@@ -23,58 +15,68 @@ zig build
 ./install.sh
 ```
 
-Custom prefix:
+## Config (Runtime, No Rebuild)
 
-```sh
-PREFIX=$HOME/.local ./install.sh
-```
+`zigfetch` loads config every run.
 
-## Runtime Config (No Rebuild)
-
-Config file:
+Default path:
 
 ```txt
 ~/.config/zigfetch/config.conf
 ```
 
-Example:
+Auto-generate config:
 
-```ini
-color=true
-border=rounded
-compact=false
-show_icon=true
-force_icon=false
-show_icon_path=true
-show_icon_note=true
-chafa_width=34
-chafa_height=16
+```sh
+zigfetch --init-config
 ```
 
-After editing config, just run `zigfetch` again.
+Overwrite with fresh defaults:
 
-## Config Path Override
+```sh
+zigfetch --init-config --force
+```
 
-Use a different config file at runtime:
+Validate config:
+
+```sh
+zigfetch --doctor-config
+```
+
+## Core Config Keys
+
+```ini
+preset=clean
+color=auto
+style=rounded
+icon=auto
+compact=false
+show_icon_note=true
+chafa_size=34x16
+modules=os,arch,kernel,uptime,cpu,memory,packages,shell,terminal,session,desktop,wm
+```
+
+Module editing shortcuts:
+
+```ini
+modules+=packages,wm
+modules-=desktop
+```
+
+## Useful Overrides
 
 ```sh
 ZIGFETCH_CONFIG=/path/to/config.conf zigfetch
-```
-
-## Icon Overrides
-
-- Disable icon rendering:
-
-```sh
 ZIGFETCH_NO_ICON=1 zigfetch
-```
-
-- Force icon rendering attempts:
-
-```sh
 ZIGFETCH_FORCE_ICON=1 zigfetch
 ```
 
-## More Docs
+## Help
 
-See `WIKI.md` for full key reference, presets, and troubleshooting.
+```sh
+zigfetch --help
+```
+
+## Full Docs
+
+See `WIKI.md` for complete configuration reference, presets, and troubleshooting.
