@@ -11,9 +11,12 @@ pub const Snapshot = struct {
     uptime: []u8,
     cpu: []u8,
     memory: []u8,
+    packages: []u8,
     shell: []u8,
     terminal: []u8,
     desktop: []u8,
+    session: []u8,
+    wm: []u8,
     distro_id: []u8,
     distro_logo: ?[]u8,
     distro_id_like: ?[]u8,
@@ -27,9 +30,12 @@ pub const Snapshot = struct {
         allocator.free(self.uptime);
         allocator.free(self.cpu);
         allocator.free(self.memory);
+        allocator.free(self.packages);
         allocator.free(self.shell);
         allocator.free(self.terminal);
         allocator.free(self.desktop);
+        allocator.free(self.session);
+        allocator.free(self.wm);
         allocator.free(self.distro_id);
         if (self.distro_logo) |v| allocator.free(v);
         if (self.distro_id_like) |v| allocator.free(v);
@@ -122,6 +128,47 @@ fn baseName(path: []const u8) []const u8 {
     return std.fs.path.basename(path);
 }
 
+fn countDirEntries(path: []const u8) u64 {
+    var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
+    var it = dir.iterate();
+    var n: u64 = 0;
+    while (it.next() catch null) |entry| {
+        if (entry.kind == .directory or entry.kind == .file) n += 1;
+    }
+    return n;
+}
+
+fn detectPackageCount(allocator: std.mem.Allocator) ![]u8 {
+    const pacman = countDirEntries("/var/lib/pacman/local");
+    if (pacman > 0) return std.fmt.allocPrint(allocator, "{d} (pacman)", .{pacman});
+
+    const dpkg = countDirEntries("/var/lib/dpkg/info");
+    if (dpkg > 0) return std.fmt.allocPrint(allocator, "{d} (dpkg)", .{dpkg});
+
+    const rpm = countDirEntries("/var/lib/rpm");
+    if (rpm > 0) return std.fmt.allocPrint(allocator, "{d}+ (rpm db entries)", .{rpm});
+
+    const apk = countDirEntries("/lib/apk/db");
+    if (apk > 0) return std.fmt.allocPrint(allocator, "{d}+ (apk db entries)", .{apk});
+
+    return allocator.dupe(u8, "unknown");
+}
+
+fn detectSession(allocator: std.mem.Allocator) ![]u8 {
+    if (std.posix.getenv("XDG_SESSION_TYPE")) |s| return allocator.dupe(u8, s);
+    if (std.posix.getenv("WAYLAND_DISPLAY") != null) return allocator.dupe(u8, "wayland");
+    if (std.posix.getenv("DISPLAY") != null) return allocator.dupe(u8, "x11");
+    return allocator.dupe(u8, "tty");
+}
+
+fn detectWm(allocator: std.mem.Allocator) ![]u8 {
+    if (std.posix.getenv("XDG_CURRENT_DESKTOP")) |s| return allocator.dupe(u8, s);
+    if (std.posix.getenv("SWAYSOCK") != null) return allocator.dupe(u8, "sway");
+    if (std.posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) return allocator.dupe(u8, "hyprland");
+    return allocator.dupe(u8, "unknown");
+}
+
 pub fn collect(allocator: std.mem.Allocator) !Snapshot {
     var os: os_release.OsRelease = os_release.read(allocator) catch .{
         .pretty_name = try allocator.dupe(u8, "Linux"),
@@ -140,9 +187,12 @@ pub fn collect(allocator: std.mem.Allocator) !Snapshot {
         .uptime = readUptime(allocator) catch try allocator.dupe(u8, "unknown"),
         .cpu = readCpuModel(allocator) catch try allocator.dupe(u8, "unknown"),
         .memory = readMemInfo(allocator) catch try allocator.dupe(u8, "unknown"),
+        .packages = detectPackageCount(allocator) catch try allocator.dupe(u8, "unknown"),
         .shell = try allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown")),
         .terminal = try allocator.dupe(u8, std.posix.getenv("TERM_PROGRAM") orelse (std.posix.getenv("TERM") orelse "unknown")),
         .desktop = try allocator.dupe(u8, std.posix.getenv("XDG_CURRENT_DESKTOP") orelse (std.posix.getenv("DESKTOP_SESSION") orelse "tty")),
+        .session = detectSession(allocator) catch try allocator.dupe(u8, "unknown"),
+        .wm = detectWm(allocator) catch try allocator.dupe(u8, "unknown"),
         .distro_id = try allocator.dupe(u8, os.id),
         .distro_logo = if (os.logo) |v| try allocator.dupe(u8, v) else null,
         .distro_id_like = if (os.id_like) |v| try allocator.dupe(u8, v) else null,

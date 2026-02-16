@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config.zig");
 
 const search_roots = [_][]const u8{
     "/usr/share/icons",
@@ -148,10 +149,56 @@ fn runRenderer(allocator: std.mem.Allocator, argv: []const []const u8) !bool {
     };
 }
 
+fn stdoutLooksInteractive() bool {
+    const posix = std.posix;
+    if (!posix.isatty(posix.STDOUT_FILENO)) return false;
+    const term = posix.getenv("TERM") orelse return false;
+    if (std.mem.eql(u8, term, "dumb")) return false;
+    return true;
+}
+
+fn inKitty() bool {
+    const term = std.posix.getenv("TERM") orelse return false;
+    return std.mem.indexOf(u8, term, "kitty") != null;
+}
+
+fn inWezTerm() bool {
+    const tp = std.posix.getenv("TERM_PROGRAM") orelse return false;
+    return std.mem.eql(u8, tp, "WezTerm");
+}
+
 pub fn renderIconAuto(allocator: std.mem.Allocator, icon_path: []const u8) !bool {
-    if (try runRenderer(allocator, &[_][]const u8{ "chafa", "--size", "34x16", icon_path })) return true;
-    if (try runRenderer(allocator, &[_][]const u8{ "wezterm", "imgcat", "--width", "34", icon_path })) return true;
-    if (try runRenderer(allocator, &[_][]const u8{ "kitten", "icat", "--align", "left", icon_path })) return true;
-    if (try runRenderer(allocator, &[_][]const u8{ "kitty", "+kitten", "icat", "--align", "left", icon_path })) return true;
+    return renderIconAutoWithConfig(allocator, icon_path, .{});
+}
+
+pub fn renderIconAutoWithConfig(
+    allocator: std.mem.Allocator,
+    icon_path: []const u8,
+    cfg: config.Config,
+) !bool {
+    if (!cfg.show_icon) return false;
+    if (std.posix.getenv("ZIGFETCH_NO_ICON")) |v| {
+        if (std.mem.eql(u8, v, "1")) return false;
+    }
+
+    const env_force_icon = if (std.posix.getenv("ZIGFETCH_FORCE_ICON")) |v|
+        std.mem.eql(u8, v, "1")
+    else
+        false;
+    const force_icon = cfg.force_icon or env_force_icon;
+    if (!force_icon and !stdoutLooksInteractive()) return false;
+
+    const size = try std.fmt.allocPrint(allocator, "{d}x{d}", .{ cfg.chafa_width, cfg.chafa_height });
+    defer allocator.free(size);
+    if (try runRenderer(allocator, &[_][]const u8{ "chafa", "--size", size, icon_path })) return true;
+    if (inWezTerm()) {
+        const w = try std.fmt.allocPrint(allocator, "{d}", .{cfg.chafa_width});
+        defer allocator.free(w);
+        if (try runRenderer(allocator, &[_][]const u8{ "wezterm", "imgcat", "--width", w, icon_path })) return true;
+    }
+    if (inKitty()) {
+        if (try runRenderer(allocator, &[_][]const u8{ "kitten", "icat", "--align", "left", icon_path })) return true;
+        if (try runRenderer(allocator, &[_][]const u8{ "kitty", "+kitten", "icat", "--align", "left", icon_path })) return true;
+    }
     return false;
 }

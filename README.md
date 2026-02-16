@@ -1,35 +1,23 @@
 # zigfetch
 
-A modular `fetch`-style system info CLI written in Zig.
+A neat, fastfetch-inspired system info tool in Zig with real distro icon support and runtime config.
 
-It can render your distro's real icon (from system icon files) when image-capable terminal tools are available.
+## Highlights
 
-## Build
+- Fastfetch-style layout with aligned modules
+- Real distro icon discovery from system icon files
+- Inline icon rendering with `chafa`, `wezterm imgcat`, or kitty image tools
+- Runtime config file loading (no rebuild required)
+- Optional frame styles, colors, compact mode, and icon behavior controls
+
+## Build & Run
 
 ```sh
 zig build
-```
-
-Binary path after build:
-
-```sh
 ./zig-out/bin/zigfetch
 ```
 
-## Run
-
-```sh
-zig build run
-```
-
-If one of these is installed, `zigfetch` will render the distro icon inline:
-- `chafa`
-- `wezterm imgcat`
-- `kitty` / `kitten icat`
-
 ## Install
-
-Default prefix (`/usr/local`):
 
 ```sh
 ./install.sh
@@ -41,30 +29,52 @@ Custom prefix:
 PREFIX=$HOME/.local ./install.sh
 ```
 
-## Uninstall
+## Runtime Config (No Rebuild)
 
-Default prefix (`/usr/local`):
+Config file:
 
-```sh
-./uninstall.sh
+```txt
+~/.config/zigfetch/config.conf
 ```
 
-Custom prefix:
+Example:
 
-```sh
-PREFIX=$HOME/.local ./uninstall.sh
+```ini
+color=true
+border=rounded
+compact=false
+show_icon=true
+force_icon=false
+show_icon_path=true
+show_icon_note=true
+chafa_width=34
+chafa_height=16
 ```
 
-## Notes
+After editing config, just run `zigfetch` again.
 
-- Icon lookup is based on `/etc/os-release` (`LOGO`, `ID`, `ID_LIKE`) and searches:
-  - `/usr/share/icons`
-  - `/usr/share/pixmaps`
-  - `/usr/share/branding`
-  - `/usr/share/distribution-logos`
-- Extra info shown includes:
-  - architecture
-  - shell
-  - terminal
-  - desktop session
-- If no renderer is available, `zigfetch` prints the real icon file path it found.
+## Config Path Override
+
+Use a different config file at runtime:
+
+```sh
+ZIGFETCH_CONFIG=/path/to/config.conf zigfetch
+```
+
+## Icon Overrides
+
+- Disable icon rendering:
+
+```sh
+ZIGFETCH_NO_ICON=1 zigfetch
+```
+
+- Force icon rendering attempts:
+
+```sh
+ZIGFETCH_FORCE_ICON=1 zigfetch
+```
+
+## More Docs
+
+See `WIKI.md` for full key reference, presets, and troubleshooting.

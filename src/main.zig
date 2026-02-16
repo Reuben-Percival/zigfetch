@@ -2,10 +2,12 @@ const std = @import("std");
 const sysinfo = @import("sysinfo.zig");
 const icon = @import("icon.zig");
 const render = @import("render.zig");
+const config = @import("config.zig");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const stdout = std.fs.File.stdout().deprecatedWriter();
+    const cfg = config.load(allocator);
 
     var snapshot = try sysinfo.collect(allocator);
     defer snapshot.deinit(allocator);
@@ -19,9 +21,9 @@ pub fn main() !void {
     defer if (icon_path) |p| allocator.free(p);
 
     const icon_rendered = if (icon_path) |p|
-        icon.renderIconAuto(allocator, p) catch false
+        icon.renderIconAutoWithConfig(allocator, p, cfg) catch false
     else
         false;
 
-    try render.print(stdout, snapshot, icon_path, icon_rendered);
+    try render.print(stdout, snapshot, icon_path, icon_rendered, cfg);
 }
