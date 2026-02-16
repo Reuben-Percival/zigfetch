@@ -44,12 +44,14 @@ fn printRow(stdout: anytype, cfg: config.Config, row: []const u8) !void {
 
 const Ansi = struct {
     const reset = "\x1b[0m";
-    const frame = "\x1b[38;5;39m";
-    const label = "\x1b[1;38;5;81m";
-    const value = "\x1b[38;5;223m";
-    const sep = "\x1b[38;5;244m";
-    const title = "\x1b[1;38;5;45m";
-    const muted = "\x1b[38;5;244m";
+    // Natural, low-fatigue palette: moss/stone/sand.
+    const frame = "\x1b[38;5;108m";
+    const label = "\x1b[1;38;5;114m";
+    const value = "\x1b[38;5;252m";
+    const sep = "\x1b[38;5;242m";
+    const title_user = "\x1b[1;38;5;151m";
+    const title_host = "\x1b[38;5;109m";
+    const muted = "\x1b[38;5;240m";
 };
 
 fn colorEnabled(cfg: config.Config) bool {
@@ -86,8 +88,17 @@ fn printLeftSegment(stdout: anytype, line: []const u8, left_width: usize, use_co
                 value,
                 Ansi.reset,
             });
-        } else if (std.mem.indexOfScalar(u8, line, '@') != null) {
-            try stdout.print("{s}{s}{s}", .{ Ansi.title, line, Ansi.reset });
+        } else if (std.mem.indexOfScalar(u8, line, '@')) |at_idx| {
+            const user = line[0..at_idx];
+            const host = line[at_idx + 1 ..];
+            try stdout.print("{s}{s}{s}@{s}{s}{s}", .{
+                Ansi.title_user,
+                user,
+                Ansi.reset,
+                Ansi.title_host,
+                host,
+                Ansi.reset,
+            });
         } else if (isAllChar(line, '-')) {
             try stdout.print("{s}{s}{s}", .{ Ansi.muted, line, Ansi.reset });
         } else {
@@ -124,7 +135,8 @@ fn printRowComposed(
 
     if (right_width > 0) {
         try stdout.print("  {s}", .{right_line});
-        var pad = if (right_width > right_line.len) right_width - right_line.len else 0;
+        const right_cols = utf8Columns(right_line);
+        var pad = if (right_width > right_cols) right_width - right_cols else 0;
         while (pad > 0) : (pad -= 1) try stdout.print(" ", .{});
     }
 
@@ -137,6 +149,31 @@ fn printRowComposed(
         },
         .none => try stdout.print("\n", .{}),
     }
+}
+
+fn utf8PrefixByColumns(s: []const u8, max_cols: usize) []const u8 {
+    if (max_cols == 0 or s.len == 0) return "";
+    var i: usize = 0;
+    var cols: usize = 0;
+    while (i < s.len and cols < max_cols) {
+        const step = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+        if (i + step > s.len) break;
+        i += step;
+        cols += 1;
+    }
+    return s[0..i];
+}
+
+fn utf8Columns(s: []const u8) usize {
+    var i: usize = 0;
+    var cols: usize = 0;
+    while (i < s.len) {
+        const step = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+        if (i + step > s.len) break;
+        i += step;
+        cols += 1;
+    }
+    return cols;
 }
 
 fn appendLeftLine(lines: *[160][320]u8, lens: *[160]usize, count: *usize, text: []const u8) void {
@@ -283,9 +320,25 @@ pub fn print(
     if (!cfg.compact) appendLeftLine(&left_lines, &left_lens, &left_count, "");
 
     for (cfg.modules[0..cfg.module_count]) |m| {
-        var mod: [320]u8 = undefined;
-        const line = std.fmt.bufPrint(&mod, "{s:<10} : {s}", .{ moduleLabel(m), moduleValue(snapshot, m) }) catch moduleValue(snapshot, m);
-        appendWrapped(&left_lines, &left_lens, &left_count, left_width, line);
+        const value = moduleValue(snapshot, m);
+        if (m == .gpu and std.mem.indexOf(u8, value, " | ") != null) {
+            var part_it = std.mem.splitSequence(u8, value, " | ");
+            var part_index: usize = 0;
+            while (part_it.next()) |part| : (part_index += 1) {
+                var label_buf: [32]u8 = undefined;
+                const label = if (part_index == 0)
+                    "GPU"
+                else
+                    std.fmt.bufPrint(&label_buf, "GPU {d}", .{part_index + 1}) catch "GPU";
+                var mod: [320]u8 = undefined;
+                const line = std.fmt.bufPrint(&mod, "{s:<10} : {s}", .{ label, part }) catch part;
+                appendWrapped(&left_lines, &left_lens, &left_count, left_width, line);
+            }
+        } else {
+            var mod: [320]u8 = undefined;
+            const line = std.fmt.bufPrint(&mod, "{s:<10} : {s}", .{ moduleLabel(m), value }) catch value;
+            appendWrapped(&left_lines, &left_lens, &left_count, left_width, line);
+        }
     }
 
     var right_lines: [128][]const u8 = undefined;
@@ -313,7 +366,7 @@ pub fn print(
         else
             "";
         const right_line = if (right_width > 0 and row_i < right_count)
-            right_lines[row_i][0..@min(right_lines[row_i].len, right_width)]
+            utf8PrefixByColumns(right_lines[row_i], right_width)
         else
             "";
         try printRowComposed(stdout, cfg, left_line, left_width, right_line, right_width, use_color);

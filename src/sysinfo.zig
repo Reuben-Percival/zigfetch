@@ -347,6 +347,59 @@ fn detectWm(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, "unknown");
 }
 
+fn detectShell(allocator: std.mem.Allocator) ![]u8 {
+    const self_pid = std.os.linux.getpid();
+    if (self_pid <= 1) return allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown"));
+    var pid: u32 = @intCast(self_pid);
+    var depth: usize = 0;
+    while (depth < 16 and pid > 1) : (depth += 1) {
+        const ppid = readPpidForPid(allocator, pid) catch break;
+        if (ppid <= 1) break;
+        pid = ppid;
+        const comm = readCommForPid(allocator, pid) catch continue;
+        defer allocator.free(comm);
+        if (isKnownShell(comm)) return allocator.dupe(u8, comm);
+    }
+    return allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown"));
+}
+
+fn isKnownShell(name: []const u8) bool {
+    return std.mem.eql(u8, name, "bash") or
+        std.mem.eql(u8, name, "fish") or
+        std.mem.eql(u8, name, "zsh") or
+        std.mem.eql(u8, name, "ksh") or
+        std.mem.eql(u8, name, "dash") or
+        std.mem.eql(u8, name, "sh") or
+        std.mem.eql(u8, name, "nu") or
+        std.mem.eql(u8, name, "pwsh");
+}
+
+fn readCommForPid(allocator: std.mem.Allocator, pid: u32) ![]u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const comm_path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/comm", .{pid});
+    const comm_raw = try readFileAlloc(allocator, comm_path);
+    defer allocator.free(comm_raw);
+    const comm = std.mem.trim(u8, firstLineOrFallback(comm_raw, "unknown"), " \t\r");
+    if (comm.len == 0) return error.InvalidData;
+    return allocator.dupe(u8, comm);
+}
+
+fn readPpidForPid(allocator: std.mem.Allocator, pid: u32) !u32 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const status_path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/status", .{pid});
+    const raw = try readFileAlloc(allocator, status_path);
+    defer allocator.free(raw);
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "PPid:")) continue;
+        var tok = std.mem.tokenizeAny(u8, line, " \t");
+        _ = tok.next();
+        const ppid_raw = tok.next() orelse return error.InvalidData;
+        return std.fmt.parseUnsigned(u32, ppid_raw, 10);
+    }
+    return error.InvalidData;
+}
+
 pub fn collect(allocator: std.mem.Allocator) !Snapshot {
     var os: os_release.OsRelease = os_release.read(allocator) catch .{
         .pretty_name = try allocator.dupe(u8, "Linux"),
@@ -373,7 +426,7 @@ pub fn collect(allocator: std.mem.Allocator) !Snapshot {
         .gpu = detectGpu(allocator) catch try allocator.dupe(u8, "unknown"),
         .memory = readMemInfo(allocator) catch try allocator.dupe(u8, "unknown"),
         .packages = detectPackageCount(allocator) catch try allocator.dupe(u8, "unknown"),
-        .shell = try allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown")),
+        .shell = detectShell(allocator) catch try allocator.dupe(u8, baseName(std.posix.getenv("SHELL") orelse "unknown")),
         .terminal = try allocator.dupe(u8, std.posix.getenv("TERM_PROGRAM") orelse (std.posix.getenv("TERM") orelse "unknown")),
         .desktop = try allocator.dupe(u8, std.posix.getenv("XDG_CURRENT_DESKTOP") orelse (std.posix.getenv("DESKTOP_SESSION") orelse "tty")),
         .session = detectSession(allocator) catch try allocator.dupe(u8, "unknown"),
